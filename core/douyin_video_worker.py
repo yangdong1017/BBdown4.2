@@ -33,6 +33,7 @@ class DouyinMediaWorkerThread(QThread):
     # {task_id: (downloaded_bytes, total_bytes)}
     task_progress = pyqtSignal(object)
     task_status = pyqtSignal(str, str, str)
+    task_result = pyqtSignal(object)
     batch_progress = pyqtSignal(int, int, int)
     finished_all = pyqtSignal(object)
 
@@ -42,11 +43,14 @@ class DouyinMediaWorkerThread(QThread):
         save_dir: str,
         concurrency: int,
         parent=None,
+        *,
+        existing_files: dict[str, tuple[str, int, int]] | None = None,
     ) -> None:
         super().__init__(parent)
         self.links = links
         self.save_dir = Path(save_dir)
         self.concurrency = max(MIN_CONCURRENCY, int(concurrency))
+        self.existing_files = dict(existing_files or {})
         self.stop_event = threading.Event()
         self._counter_lock = threading.Lock()
         self._processed = 0
@@ -125,6 +129,18 @@ class DouyinMediaWorkerThread(QThread):
     ) -> DouyinMediaDownloadResult:
         if self.stop_event.is_set():
             return DouyinMediaDownloadResult(link=link, status="stopped", message="已停止")
+        existing = self.existing_files.get(link.task_id)
+        if existing:
+            path, size, mtime_ns = existing
+            try:
+                stat = Path(path).stat()
+                if Path(path).is_file() and not Path(path).is_symlink() and size > 0 and (
+                    stat.st_size, stat.st_mtime_ns
+                ) == (size, mtime_ns):
+                    return DouyinMediaDownloadResult(link=link, status="exists", output_path=path)
+            except OSError:
+                pass
+            return DouyinMediaDownloadResult(link=link, status="failed", message="原文件已变化，请核对后重试。")
         with self._counter_lock:
             self._active += 1
         self.task_status.emit(link.task_id, "下载中", "")
@@ -167,6 +183,7 @@ class DouyinMediaWorkerThread(QThread):
         return DouyinMediaDownloadResult(link=link, status="failed", message="下载任务异常")
 
     def _record_result(self, result: DouyinMediaDownloadResult, state: _BatchState) -> None:
+        self.task_result.emit(result)
         state.processed_ids.add(result.link.task_id)
         with self._counter_lock:
             self._processed += 1

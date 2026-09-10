@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+import logging
 
 from PyQt5.QtCore import QTimer, QUrl, Qt
 from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import (
     QApplication,
+    QDialog,
     QFileDialog,
     QHBoxLayout,
     QVBoxLayout,
@@ -28,28 +30,29 @@ from core.config import (
     DOUYIN_AUDIO_DOWNLOAD,
     DOUYIN_VIDEO_DOWNLOAD,
     DOUYIN_VIDEO_CONCURRENCY_OPTIONS,
+    RUNTIME_DIR,
     load_douyin_video_config,
     save_douyin_video_config,
 )
-from core.douyin_audio_urls import extract_douyin_audio_links
+from core.douyin_audio_urls import DOUYIN_STANDARD_AUDIO_LINK, extract_douyin_audio_links
 from core.douyin_media import DouyinMediaLink
 from core.douyin_video_urls import extract_douyin_video_links
 from core.douyin_video_worker import DouyinMediaWorkerThread
+from core.douyin_video_downloader import DouyinMediaDownloadResult
+from core.download_renaming import DownloadLibrary, DownloadFile, RenameError
 from core.models import DouyinVideoBatchResult
 from .collapsible_panel import CollapsibleRightPanel
 from .platform_utils import open_directory
 from .task_table import TaskTable
 from .window_title import set_task_title
 from .widgets import CardFrame, TEXT_EDIT_STYLE
+from .batch_rename_dialog import BatchRenameDialog
+from .rename_toolbar import RenameToolbar
 
 
 DOUYIN_STANDARD_VIDEO_LINK = (
     "https://aweme.snssdk.com/aweme/v1/play/"
     "?video_id=v0200fg10000d2t5cmnog65rqiip1p90"
-)
-DOUYIN_STANDARD_AUDIO_LINK = (
-    "https://lf9-music-east.douyinstatic.com/obj/ies-music-hj/"
-    "7546439142222302011.mp3"
 )
 
 
@@ -61,6 +64,10 @@ class DouyinVideoPage(QWidget):
         self.worker: DouyinMediaWorkerThread | None = None
         self.row_by_media_id: dict[str, int] = {}
         self.current_download_type = self.config.download_type
+        self.library = DownloadLibrary(RUNTIME_DIR / "douyin_downloads.json")
+        self.download_files: list[DownloadFile] = []
+        self.rename_undo: list[tuple[str, str, str, str]] = []
+        self._batch_running = False
         self.save_timer = QTimer(self)
         self.save_timer.setSingleShot(True)
         self.save_timer.setInterval(350)
@@ -215,10 +222,23 @@ class DouyinVideoPage(QWidget):
         action_row.addStretch(1)
         return action_row
 
-    def _build_task_table(self) -> TaskTable:
-        media_name = "音频" if self.current_download_type == DOUYIN_AUDIO_DOWNLOAD else "视频"
-        self.table = TaskTable(self, id_header=f"{media_name}ID")
-        return self.table
+    def _build_task_table(self) -> QWidget:
+        panel = QWidget(self)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(5)
+        self.rename_bar = RenameToolbar("下载结果", panel)
+        self.result_count_label = self.rename_bar.count_label
+        self.undo_rename_btn = self.rename_bar.undo_btn
+        self.undo_rename_btn.clicked.connect(self._undo_rename)
+        self.rename_btn = self.rename_bar.rename_btn
+        self.rename_btn.clicked.connect(self._rename_downloads)
+        layout.addWidget(self.rename_bar)
+        self.table = TaskTable(panel, id_header="文件名")
+        self.table.setSortingEnabled(False)
+        self.table.itemSelectionChanged.connect(self._refresh_rename_controls)
+        layout.addWidget(self.table, 1)
+        return panel
 
     def _apply_state(self) -> None:
         self.download_type_segment.setCurrentItem(self.current_download_type)
@@ -228,8 +248,11 @@ class DouyinVideoPage(QWidget):
         self._refresh_download_type_ui()
         self._set_running_state(False)
         self._refresh_link_count()
+        self._restore_download_results()
 
     def _on_download_type_changed(self, download_type: str) -> None:
+        if self._batch_running:
+            return
         self._store_active_urls()
         self.current_download_type = download_type
         self.config.download_type = download_type
@@ -237,8 +260,8 @@ class DouyinVideoPage(QWidget):
         self.url_edit.blockSignals(True)
         self.url_edit.setPlainText(self._active_urls_text())
         self.url_edit.blockSignals(False)
-        self.table.setRowCount(0)
-        self.row_by_media_id.clear()
+        self.rename_undo = []
+        self._restore_download_results()
         self._on_batch_progress(0, 0, 0)
         self._refresh_download_type_ui()
         self._refresh_link_count()
@@ -257,8 +280,7 @@ class DouyinVideoPage(QWidget):
             self.start_btn.setText("开始下载音频")
         self.standard_link_actions.setVisible(True)
         if hasattr(self, "table"):
-            media_name = "视频" if is_video else "音频"
-            self.table.setHorizontalHeaderLabels([f"{media_name}ID", "进度", "状态"])
+            self.table.set_id_header("文件名")
         if not self.is_running():
             self.start_btn.setEnabled(True)
 
@@ -353,6 +375,11 @@ class DouyinVideoPage(QWidget):
         self.url_edit.clear()
         self.table.setRowCount(0)
         self.row_by_media_id.clear()
+        self.download_files = []
+        self.library.latest[self.current_download_type] = []
+        self.rename_undo = []
+        self._save_download_history()
+        self._refresh_rename_controls()
         self._on_batch_progress(0, 0, 0)
         self.status_label.setText("就绪")
 
@@ -373,6 +400,8 @@ class DouyinVideoPage(QWidget):
             return
 
         self._populate_tasks(links)
+        self.rename_undo = []
+        self._save_download_history()
         self._save_config()
         self._on_batch_progress(0, len(links), 0)
 
@@ -381,18 +410,26 @@ class DouyinVideoPage(QWidget):
             save_dir=str(save_dir),
             concurrency=self.config.concurrency,
             parent=self,
+            existing_files={record.task_id: (record.path, record.size, record.mtime_ns) for record in self.download_files
+                            if record.matches_file()},
         )
         self.worker.status.connect(self.status_label.setText)
         self.worker.task_progress.connect(self._on_task_progress_batch)
         self.worker.task_status.connect(self._on_task_status)
+        self.worker.task_result.connect(self._on_task_result)
         self.worker.batch_progress.connect(self._on_batch_progress)
         self.worker.finished_all.connect(self._on_finished)
-        self.worker.start()
         self._set_running_state(True)
+        self.worker.start()
 
     def _populate_tasks(self, links: list[DouyinMediaLink]) -> None:
+        self.download_files = self.library.register(links, self.current_download_type, Path(self.config.save_dir))
+        for record in self.download_files:
+            record.status, record.detail = "等待中", ""
         self.row_by_media_id = {link.task_id: row for row, link in enumerate(links)}
-        self.table.populate([link.task_id for link in links])
+        self.table.populate([Path(record.path).name for record in self.download_files])
+        self._refresh_result_names()
+        self._refresh_rename_controls()
 
     def _on_task_progress_batch(self, updates: dict[str, tuple[int, int]]) -> None:
         for task_id, (downloaded, total) in updates.items():
@@ -412,7 +449,22 @@ class DouyinVideoPage(QWidget):
         row = self.row_by_media_id.get(task_id)
         if row is None:
             return
+        if row < len(self.download_files):
+            self.download_files[row].status = status
+            self.download_files[row].detail = detail if status == "失败" else ""
         self.table.set_status(row, status, detail)
+
+    def _on_task_result(self, result: DouyinMediaDownloadResult) -> None:
+        row = self.row_by_media_id.get(result.link.task_id)
+        if row is None or result.status not in {"completed", "exists"}:
+            return
+        record = self.download_files[row]
+        record.path = str(Path(result.output_path).absolute())
+        try:
+            record.remember_file()
+        except OSError:
+            record.size, record.mtime_ns = 0, 0
+        self._refresh_result_names()
 
     def _on_batch_progress(self, processed: int, total: int, active: int) -> None:
         percent = int(processed * 100 / total) if total else 0
@@ -424,7 +476,6 @@ class DouyinVideoPage(QWidget):
     def _on_finished(self, result: object) -> None:
         assert isinstance(result, DouyinVideoBatchResult)
         self.worker = None
-        self._set_running_state(False)
         set_task_title(self)
         if result.stopped:
             summary = (
@@ -433,9 +484,24 @@ class DouyinVideoPage(QWidget):
             )
         else:
             summary = f"下载结束：成功 {result.completed}，已存在 {result.skipped}，失败 {result.failed}。"
+        ready = [record for record in self.download_files
+                 if record.pending_name and record.status in {"已完成", "已存在"}]
+        if ready:
+            try:
+                renamed = self.library.apply(self.library.plan(ready, [record.pending_name for record in ready]))
+                summary += " " + renamed.summary()
+                if renamed.errors:
+                    logging.getLogger("bbdown").warning("自动重命名失败：%s", renamed.errors)
+            except (OSError, RenameError):
+                summary += " 标题暂未应用，请使用批量重命名重试。"
+        self._refresh_result_names()
+        if not self._save_download_history():
+            summary += " 下载记录保存失败，请检查软件目录权限。"
         self.status_label.setText(summary)
+        self._set_running_state(False)
 
     def _set_running_state(self, running: bool) -> None:
+        self._batch_running = running
         self.start_btn.setEnabled(not running)
         self.stop_btn.setEnabled(running)
         self.stop_btn.setText("停止任务")
@@ -444,6 +510,78 @@ class DouyinVideoPage(QWidget):
         self.concurrency_combo.setEnabled(not running)
         self.download_type_segment.setEnabled(not running)
         self.clear_btn.setEnabled(not running)
+        self._refresh_rename_controls()
+
+    def _save_download_history(self) -> bool:
+        try:
+            self.library.save()
+            return True
+        except OSError:
+            logging.getLogger("bbdown").exception("下载记录保存失败")
+            return False
+
+    def _restore_download_results(self) -> None:
+        self.download_files = self.library.current(self.current_download_type)
+        self.row_by_media_id = {record.task_id: row for row, record in enumerate(self.download_files)}
+        self.table.populate([Path(record.path).name for record in self.download_files])
+        for row, record in enumerate(self.download_files):
+            self.table.set_status(row, record.status, record.detail)
+        self._refresh_result_names()
+        self._refresh_rename_controls()
+
+    def _refresh_result_names(self) -> None:
+        for row, record in enumerate(self.download_files):
+            item = self.table.item(row, 0)
+            if item is None:
+                continue
+            item.setText(Path(record.path).name)
+            tooltip = f"{record.path}\nID：{record.task_id}"
+            if record.pending_name:
+                tooltip += f"\n待应用标题：{record.pending_name}"
+            item.setToolTip(tooltip)
+            item.setData(Qt.UserRole, record.path)
+
+    def _refresh_rename_controls(self) -> None:
+        if not hasattr(self, "table"):
+            return
+        selected = len(self.table.selectionModel().selectedRows())
+        self.rename_bar.update_state(len(self.download_files), selected, enabled=bool(self.download_files),
+                                     can_undo=bool(self.rename_undo), running=self._batch_running)
+
+    def _rename_downloads(self) -> None:
+        if self._batch_running or not self.download_files:
+            return
+        rows = sorted(index.row() for index in self.table.selectionModel().selectedRows())
+        records = [self.download_files[row] for row in rows] if rows else list(self.download_files)
+        dialog = BatchRenameDialog(self.library, records, self.window())
+        if dialog.exec() != QDialog.Accepted:
+            return
+        try:
+            result = self.library.apply(self.library.plan(records, dialog.titles))
+            self.rename_undo = result.undo
+            self.status_label.setText(result.summary())
+            if result.errors:
+                MessageBox("部分文件未改名", "\n".join(result.errors[:5]), self.window()).exec()
+        except (OSError, RenameError) as exc:
+            logging.getLogger("bbdown").exception("批量重命名失败")
+            message = str(exc) if isinstance(exc, RenameError) else "下载记录保存失败，请检查软件目录权限。"
+            MessageBox("重命名未完成", message, self.window()).exec()
+        self._refresh_result_names()
+        self._refresh_rename_controls()
+
+    def _undo_rename(self) -> None:
+        if self._batch_running or not self.rename_undo:
+            return
+        try:
+            result = self.library.undo(self.rename_undo)
+            self.rename_undo = result.undo
+            self.status_label.setText("已撤销上次重命名。" if not result.errors else "部分文件未能恢复原名。")
+            if result.errors:
+                MessageBox("部分文件未恢复", "\n".join(result.errors[:5]), self.window()).exec()
+        except OSError:
+            MessageBox("撤销未完成", "下载记录保存失败，请检查软件目录权限。", self.window()).exec()
+        self._refresh_result_names()
+        self._refresh_rename_controls()
 
     def stop(self) -> None:
         if not self.is_running() or self.worker is None:

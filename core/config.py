@@ -17,7 +17,7 @@ LICENSE_PATH = APP_ROOT / "bbdown_license.json"
 RUNTIME_DIR = APP_ROOT / "bbdown_runtime"
 TOOLS_DIR = APP_ROOT / "bbdown_tools"
 
-APP_VERSION = "4.1"
+APP_VERSION = "4.2"
 MIN_CONCURRENCY = 5
 THREAD_OPTIONS = (5, 8, 10)
 ARIA2_CONNECTIONS_PER_TASK = 4

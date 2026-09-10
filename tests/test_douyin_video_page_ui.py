@@ -118,8 +118,8 @@ class DouyinVideoPageUITests(unittest.TestCase):
         self.assertIn("1 条可下载音频链接", page.count_label.text())
 
         page._populate_tasks(links)
-        self.assertEqual(page.table.horizontalHeaderItem(0).text(), "音频ID")
-        self.assertEqual(page.table.item(0, 0).text(), "7546439142222302011")
+        self.assertEqual(page.table.horizontalHeaderItem(0).text(), "文件名")
+        self.assertEqual(page.table.item(0, 0).text(), "7546439142222302011.mp3")
         self.assertEqual(page.table.item(0, 1).text(), "0%")
         self.assertEqual(page.table.item(0, 2).text(), "等待中")
 

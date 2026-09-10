@@ -11,6 +11,7 @@ from .widgets import CardFrame
 
 
 VOLCENGINE_URL = "https://www.volcengine.com/"
+API_KEY_TUTORIAL_URL = "https://rcnyou54a8x8.feishu.cn/docx/RjwndtvZXoZ5Orx2LiRcfISfnMf"
 
 
 class DoubaoApiTestThread(QThread):
@@ -58,6 +59,13 @@ class SettingsPage(QWidget):
         self.open_volc_btn.clicked.connect(self._open_volcengine)
         link_row.addWidget(self.open_volc_btn)
         card_layout.addLayout(link_row)
+
+        tutorial_row = QHBoxLayout()
+        tutorial_row.addWidget(CaptionLabel(f"API Key 获取教程：{API_KEY_TUTORIAL_URL}", card), 1)
+        self.open_tutorial_btn = PushButton("打开", card)
+        self.open_tutorial_btn.clicked.connect(self._open_api_key_tutorial)
+        tutorial_row.addWidget(self.open_tutorial_btn)
+        card_layout.addLayout(tutorial_row)
 
         action_row = QHBoxLayout()
         self.save_btn = PrimaryPushButton("保存", card)
@@ -122,12 +130,16 @@ class SettingsPage(QWidget):
     def _open_volcengine(self) -> None:
         QDesktopServices.openUrl(QUrl(VOLCENGINE_URL))
 
+    def _open_api_key_tutorial(self) -> None:
+        QDesktopServices.openUrl(QUrl(API_KEY_TUTORIAL_URL))
+
     def _set_busy(self, busy: bool) -> None:
         self.api_key_edit.setEnabled(not busy)
         self.save_btn.setEnabled(not busy)
         self.test_btn.setEnabled(not busy)
         self.clear_btn.setEnabled(not busy)
         self.open_volc_btn.setEnabled(not busy)
+        self.open_tutorial_btn.setEnabled(not busy)
 
     def _set_status(self, text: str, *, ok: bool) -> None:
         self.status_label.setText(text)

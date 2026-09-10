@@ -8,6 +8,12 @@ from urllib.parse import unquote, urlparse
 from .links import AUDIO_SUFFIXES, dedupe, is_douyin_cdn_host, iter_urls
 
 
+DOUYIN_STANDARD_AUDIO_LINK = (
+    "https://lf9-music-east.douyinstatic.com/obj/ies-music-hj/"
+    "7546439142222302011.mp3"
+)
+
+
 @dataclass(frozen=True, slots=True)
 class DouyinAudioLink:
     audio_id: str

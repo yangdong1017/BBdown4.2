@@ -4,7 +4,7 @@ setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
 REM 一键出包：清理 -> 打包 EXE -> 解压版 zip -> 安装包 -> 汇总
-REM 版本号从 core/config.py 读取，发版时只改那一处即可。
+REM 产物名称从 core/config.py 读取版本号；发版时同步更新安装脚本、README、开发文档和版本检查。
 REM 打完包还要自己装上去测一遍，测过才推送，见开发文档。
 
 echo ============================================

@@ -37,6 +37,7 @@ class UrlASRWorkerThread(QThread):
     count = pyqtSignal(int, int, int, int, str)
     task_metadata = pyqtSignal(int, str, int)
     task_status = pyqtSignal(int, str)
+    task_result = pyqtSignal(object)
     finished_all = pyqtSignal(object)
 
     def __init__(
@@ -47,6 +48,8 @@ class UrlASRWorkerThread(QThread):
         concurrency: int,
         out_dir: str,
         parent=None,
+        *,
+        output_paths: list[Path] | None = None,
     ) -> None:
         super().__init__(parent)
         self.urls = urls
@@ -55,14 +58,19 @@ class UrlASRWorkerThread(QThread):
         self.concurrency = max(MIN_CONCURRENCY, int(concurrency))
         self.out_dir = Path(out_dir) if out_dir else default_url_output_dir()
         self.stop_flag = threading.Event()
-        allocator = OutputPathAllocator()
-        self.output_paths = [
-            allocator.reserve(
-                self.out_dir / f"{audio_name_from_url(url, index)}.{self.export_format}",
-                allow_existing=True,
-            )
-            for index, url in enumerate(self.urls)
-        ]
+        if output_paths is not None:
+            if len(output_paths) != len(self.urls):
+                raise ValueError("output_paths and urls must have the same length")
+            self.output_paths = [Path(path) for path in output_paths]
+        else:
+            allocator = OutputPathAllocator()
+            self.output_paths = [
+                allocator.reserve(
+                    self.out_dir / f"{audio_name_from_url(url, index)}.{self.export_format}",
+                    allow_existing=True,
+                )
+                for index, url in enumerate(self.urls)
+            ]
 
     def stop(self) -> None:
         self.stop_flag.set()
@@ -133,6 +141,7 @@ class UrlASRWorkerThread(QThread):
                 fail += 1
                 failed_urls.append(result.source)
             self.progress.emit(result.index, result.source, result.status, result.message)
+            self.task_result.emit(result)
             self.count.emit(ok, skip, fail, total, name)
 
         if self.stop_flag.is_set():
@@ -141,6 +150,7 @@ class UrlASRWorkerThread(QThread):
                     stopped_count += 1
                     failed_urls.append(url)
                     self.task_status.emit(index, "已停止")
+                    self.task_result.emit(ASRTaskResult(index, url, "stopped", "已停止"))
 
         minutes, seconds = divmod(int(time.time() - started), 60)
         stopped = self.stop_flag.is_set()

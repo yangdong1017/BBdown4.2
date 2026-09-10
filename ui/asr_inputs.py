@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QColor
+from PyQt5.QtCore import Qt, QUrl, pyqtSignal
+from PyQt5.QtGui import QColor, QDesktopServices
 from PyQt5.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QFileDialog,
     QHBoxLayout,
     QHeaderView,
@@ -14,11 +15,13 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from qfluentwidgets import BodyLabel, CaptionLabel, PushButton, TableWidget
+from qfluentwidgets import CaptionLabel, MessageBox, PushButton, SegmentedWidget, TableWidget
 
+from core.douyin_audio_urls import DOUYIN_STANDARD_AUDIO_LINK
 from core.media import MEDIA_EXTENSIONS, is_media
 from core.url_audio import audio_filename_from_url, extract_audio_urls
 from .widgets import CardFrame, TEXT_EDIT_STYLE
+from .rename_toolbar import RenameToolbar
 
 
 STATUS_COLORS = {
@@ -45,6 +48,7 @@ class LocalFileInput(QWidget):
     def __init__(self, start_dir: str = "", parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.start_dir = start_dir
+        self._running = False
         self._build_ui()
         self.setAcceptDrops(True)
 
@@ -82,7 +86,15 @@ class LocalFileInput(QWidget):
         self.table.setColumnWidth(2, 90)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        layout.addWidget(self.table, 1)
+        self.table.setSortingEnabled(False)
+        results = QWidget(self)
+        result_layout = QVBoxLayout(results)
+        result_layout.setContentsMargins(0, 0, 0, 0)
+        result_layout.setSpacing(5)
+        self.rename_bar = RenameToolbar("转写结果", results)
+        result_layout.addWidget(self.rename_bar)
+        result_layout.addWidget(self.table, 1)
+        layout.addWidget(results, 1)
 
     def set_start_dir(self, directory: str) -> None:
         self.start_dir = directory
@@ -108,6 +120,8 @@ class LocalFileInput(QWidget):
         self.add_files(files)
 
     def add_files(self, files: list[str]) -> None:
+        if self._running:
+            return
         existing = {
             str(Path(self.table.item(row, 0).data(Qt.UserRole)).resolve())
             for row in range(self.table.rowCount())
@@ -128,6 +142,8 @@ class LocalFileInput(QWidget):
             self.files_added.emit(added)
 
     def clear(self) -> None:
+        if self._running:
+            return
         self.table.setRowCount(0)
         self.cleared.emit()
 
@@ -138,7 +154,7 @@ class LocalFileInput(QWidget):
             name_item = self.table.item(row, 0)
             if not status_item or not name_item:
                 continue
-            if status_item.text() in ("未处理", "失败"):
+            if status_item.text() in ("未处理", "失败", "已停止", "等待中"):
                 files.append((row, name_item.data(Qt.UserRole)))
         return files
 
@@ -157,6 +173,8 @@ class LocalFileInput(QWidget):
         return str(Path(path).parent) if path else ""
 
     def add_dropped_urls(self, urls) -> None:
+        if self._running:
+            return
         files: list[str] = []
         for url in urls:
             path = Path(url.toLocalFile())
@@ -167,7 +185,7 @@ class LocalFileInput(QWidget):
         self.add_files(files)
 
     def dragEnterEvent(self, event) -> None:  # type: ignore[override]
-        if event.mimeData().hasUrls():
+        if not self._running and event.mimeData().hasUrls():
             event.accept()
         else:
             event.ignore()
@@ -180,20 +198,38 @@ class LocalFileInput(QWidget):
         self.table.insertRow(row)
         name_item = QTableWidgetItem(path.name)
         name_item.setData(Qt.UserRole, resolved)
-        size_item = QTableWidgetItem(f"{path.stat().st_size / (1024 * 1024):.1f} MB")
+        try:
+            size = f"{path.stat().st_size / (1024 * 1024):.1f} MB"
+        except OSError:
+            size = "未知"
+        size_item = QTableWidgetItem(size)
         status_item = QTableWidgetItem("未处理")
         status_item.setForeground(QColor(STATUS_COLORS["未处理"]))
         self.table.setItem(row, 0, name_item)
         self.table.setItem(row, 1, size_item)
         self.table.setItem(row, 2, status_item)
 
+    def restore_sources(self, sources: list[str]) -> None:
+        self.table.setRowCount(0)
+        for source in sources:
+            self._append_file(Path(source), source)
+
+    def set_running(self, running: bool) -> None:
+        self._running = running
+        for button in (self.add_files_btn, self.add_folder_btn, self.use_download_dir_btn, self.clear_btn):
+            button.setEnabled(not running)
+        self.setAcceptDrops(not running)
+
 
 class UrlInput(QWidget):
     cleared = pyqtSignal()
+    tasks_changed = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.urls: list[str] = []
+        self._running = False
+        self._retain_results = False
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -203,12 +239,26 @@ class UrlInput(QWidget):
 
         self.input_card = CardFrame(self)
         input_layout = QVBoxLayout(self.input_card)
-        input_layout.setContentsMargins(18, 18, 18, 18)
-        input_layout.setSpacing(10)
-        input_layout.addWidget(BodyLabel("抖音音频链接", self.input_card))
+        input_layout.setContentsMargins(18, 9, 18, 18)
+        input_layout.setSpacing(5)
+
+        audio_link_row = QHBoxLayout()
+        audio_link_row.setSpacing(10)
+        self.standard_link_label = CaptionLabel(
+            f"标准音频链接：{DOUYIN_STANDARD_AUDIO_LINK}", self.input_card
+        )
+        self.standard_link_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.standard_link_label.setToolTip(DOUYIN_STANDARD_AUDIO_LINK)
+        self.standard_link_label.setWordWrap(True)
+        self.standard_link_actions = SegmentedWidget(self.input_card)
+        self.standard_link_actions.addItem("copy", "复制", self._copy_standard_link)
+        self.standard_link_actions.addItem("open", "打开", self._open_standard_link)
+        self.standard_link_actions.setFixedWidth(150)
+        audio_link_row.addWidget(self.standard_link_label, 1)
+        audio_link_row.addWidget(self.standard_link_actions)
+        input_layout.addLayout(audio_link_row)
 
         self.edit = QPlainTextEdit(self.input_card)
-        self.edit.setPlaceholderText("粘贴抖音 mp3/wav 音频直链，一行一个；也可以粘贴包含音频直链的整段文本。")
         self.edit.setMinimumHeight(120)
         self.edit.setMaximumHeight(180)
         self.edit.setStyleSheet(TEXT_EDIT_STYLE)
@@ -242,7 +292,23 @@ class UrlInput(QWidget):
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setAlternatingRowColors(False)
-        layout.addWidget(self.table, 1)
+        self.table.setSortingEnabled(False)
+        results = QWidget(self)
+        result_layout = QVBoxLayout(results)
+        result_layout.setContentsMargins(0, 0, 0, 0)
+        result_layout.setSpacing(5)
+        self.rename_bar = RenameToolbar("转写结果", results)
+        result_layout.addWidget(self.rename_bar)
+        result_layout.addWidget(self.table, 1)
+        layout.addWidget(results, 1)
+
+    def _copy_standard_link(self) -> None:
+        QApplication.clipboard().setText(DOUYIN_STANDARD_AUDIO_LINK)
+
+    def _open_standard_link(self) -> None:
+        if QDesktopServices.openUrl(QUrl(DOUYIN_STANDARD_AUDIO_LINK)):
+            return
+        MessageBox("提示", "无法打开链接，请检查系统默认浏览器设置。", self.window()).exec()
 
     def text(self) -> str:
         return self.edit.toPlainText()
@@ -251,6 +317,7 @@ class UrlInput(QWidget):
         self.edit.blockSignals(True)
         self.edit.setPlainText("\n".join(urls))
         self.edit.blockSignals(False)
+        self.count_label.setText(f"{len(urls)} 个有效链接")
         failed = set(urls)
         for index, url in enumerate(self.urls):
             if url in failed:
@@ -258,8 +325,10 @@ class UrlInput(QWidget):
 
     def prepare_tasks(self, urls: list[str]) -> None:
         self._replace_tasks(urls)
+        self._retain_results = True
 
     def set_running(self, running: bool) -> None:
+        self._running = running
         self.edit.setReadOnly(running)
         self.clean_btn.setEnabled(not running)
         self.clear_btn.setEnabled(not running)
@@ -283,10 +352,15 @@ class UrlInput(QWidget):
         self.table.setItem(index, 2, item)
 
     def clean_links(self) -> None:
+        if self._running:
+            return
         urls = extract_audio_urls(self.text())
         self.edit.setPlainText("\n".join(urls))
 
     def clear(self) -> None:
+        if self._running:
+            return
+        self._retain_results = False
         self.edit.blockSignals(True)
         self.edit.clear()
         self.edit.blockSignals(False)
@@ -294,6 +368,9 @@ class UrlInput(QWidget):
         self.cleared.emit()
 
     def _sync_tasks_from_text(self) -> None:
+        if self._running or self._retain_results:
+            self.count_label.setText(f"{len(extract_audio_urls(self.text()))} 个有效链接")
+            return
         self._replace_tasks(extract_audio_urls(self.text()))
 
     def _replace_tasks(self, urls: list[str]) -> None:
@@ -302,6 +379,7 @@ class UrlInput(QWidget):
         self.table.setRowCount(len(urls))
         for index, url in enumerate(urls):
             name_item = QTableWidgetItem(audio_filename_from_url(url, index))
+            name_item.setData(Qt.UserRole, url)
             name_item.setToolTip(url)
             size_item = QTableWidgetItem("待获取")
             size_item.setTextAlignment(Qt.AlignCenter)
@@ -313,6 +391,7 @@ class UrlInput(QWidget):
             self.table.setItem(index, 2, status_item)
         self.table.setUpdatesEnabled(True)
         self.count_label.setText(f"{len(urls)} 个有效链接")
+        self.tasks_changed.emit()
 
     @staticmethod
     def _format_size(size_bytes: int) -> str:

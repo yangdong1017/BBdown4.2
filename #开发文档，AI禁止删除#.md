@@ -61,13 +61,13 @@ README 中的版本号
 Release 文件名
 ```
 
-例如 4.1：
+例如 4.2：
 
 ```text
-BBDown 4.1
-BBDown-4.1.exe
-BBDown-4.1.zip
-v4.1
+BBDown 4.2
+BBDown-4.2.exe
+BBDown-4.2.zip
+v4.2
 ```
 
 ## 打包流程
@@ -81,15 +81,15 @@ python -m PyInstaller build_bbdown_launcher.spec --noconfirm --clean
 生成解压版：
 
 ```powershell
-New-Item -ItemType Directory -Force -Path .\release_assets\v4.1
-Compress-Archive -Path .\dist\BBDown -DestinationPath .\release_assets\v4.1\BBDown-4.1.zip -Force
+New-Item -ItemType Directory -Force -Path .\release_assets\v4.2
+Compress-Archive -Path .\dist\BBDown -DestinationPath .\release_assets\v4.2\BBDown-4.2.zip -Force
 ```
 
 生成安装包：
 
 ```powershell
 & "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" .\installer.iss
-Copy-Item .\installer_output\BBDown-4.1.exe .\release_assets\v4.1\BBDown-4.1.exe -Force
+Copy-Item .\installer_output\BBDown-4.2.exe .\release_assets\v4.2\BBDown-4.2.exe -Force
 ```
 
 ## GitHub Release 习惯
@@ -97,8 +97,8 @@ Copy-Item .\installer_output\BBDown-4.1.exe .\release_assets\v4.1\BBDown-4.1.exe
 Release 上传两个文件：
 
 ```text
-BBDown-4.1.exe
-BBDown-4.1.zip
+BBDown-4.2.exe
+BBDown-4.2.zip
 ```
 
 不要把 `dist/`、`installer_output/`、`release_assets/` 提交到 Git 仓库。
@@ -129,7 +129,20 @@ AI 修改本项目时必须遵守：
 8. 如果用户说“整理文件夹”，只清缓存和非必要产物，不动源码和私有配置。
 9. 最终回复要说清楚改了什么、测试了什么、还有什么没做。
 
-## 当前 4.1 关键变化
+## 当前 4.2 关键变化
+
+1. 设置页增加 API Key 获取教程及“打开”按钮。
+2. 批量转文字的音频链接区显示标准音频链接、复制和打开，间距与下载页一致。
+3. 抖音视频和音频下载结果支持“批量重命名”：点击直接弹出标题输入框，粘贴后直接应用，没有逐行编辑或演示数据。
+4. 第一列显示文件名，ID 和实际路径放在悬停提示中。标题按任务原始顺序对应，失败项不移除；空白行保留原名。
+5. `core/download_renaming.py` 负责文件身份、命名冲突、实际改名和撤销。`ui/batch_rename_dialog.py` 沿用原生深色控件。
+6. `bbdown_runtime/douyin_downloads.json` 保存下载结果与改名路径。再次下载须沿用映射检查已存在文件，不能仅按原 ID 判断；更换保存目录不能改变旧结果的实际路径。
+7. 重命名必须保留扩展名、不覆盖其他文件；下载运行中禁止改名。测试必须使用临时文件，不能对真实用户素材跑改名测试。
+8. 批量转文字两种模式复用 `RenameToolbar` 和 `BatchRenameDialog`，仅重命名输出文稿；`LocalFileInput` 的 `Qt.UserRole` 必须始终保留源音视频路径，输出记录使用独立角色绑定。
+9. `core/asr_renaming.py` 和 `bbdown_runtime/asr_transcripts.json` 保存文稿映射。任务结果须使用实际输出路径；URL 失败子集重试保留完整列表及原顺序，不能按完成顺序对应标题。
+10. 转写运行期间禁用模式、格式、输出目录、输入增删和重命名，结束后再开放；跳过的文稿只有指纹匹配已记录输出时才可采纳并改名。
+
+## 4.1 关键变化
 
 4.1 没有新增功能，是一次稳定性和结构整理。
 

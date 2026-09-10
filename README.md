@@ -1,6 +1,6 @@
-﻿# BBDown4.1
+﻿# BBDown4.2
 
-BBDown4.1 是一个 Windows 桌面工具，用来降低批量处理视频、音频素材的操作成本。
+BBDown4.2 是一个 Windows 桌面工具，用来降低批量处理视频、音频素材的操作成本。
 
 它支持 B站链接批量下载音频、抖音视频直链批量下载，也支持将抖音音频链接、本地音频、本地视频批量转写为文字，适合整理口播文案、字幕文本和音频内容。
 
@@ -20,6 +20,18 @@ BBDown4.1 是一个 Windows 桌面工具，用来降低批量处理视频、音�
 - 显示单个视频和整批任务下载进度
 - 支持停止任务和失败重试
 - 当前不解析 `douyin.com/video/...` 页面链接
+
+### 下载或转写后批量重命名
+
+- 抖音视频、音频下载结束后，点击结果表上方“批量重命名”。
+- 直接在弹窗粘贴一列标题（一行一个），点击“应用重命名”。不需要在表格里逐个修改。
+- 未选中行时处理当前列表全部任务；选中多行时只处理选中的任务，均按列表原始顺序对应。
+- 标题行数必须一致，空白行保留原名；失败任务保留位置，重试下载成功后自动使用已填写的标题。
+- 自动保留扩展名、处理非法字符和同名文件，不覆盖已有文件；可撤销最近一次重命名。
+- 下载结果和改名后的路径保存在 `bbdown_runtime/douyin_downloads.json`，切换视频/音频或重启后保留；再次下载同一链接会识别已改名文件。
+- “批量转文字”的本地音视频和音频链接两种模式也提供相同按钮和弹窗，仅修改输出的 TXT/SRT/ASS 文稿，原音视频不变。
+- 文稿改名支持选择部分行、空白行保留、失败重试后应用标题及撤销。运行中锁定输入、格式、输出目录和改名操作，避免对应错位。
+- `bbdown_runtime/asr_transcripts.json` 保存来源与实际文稿路径，重启或切换模式后保留。更换输出目录/格式不改变旧文稿的改名对象；重试仍能识别已经改名的文稿。
 
 ### 批量转文字
 
@@ -47,7 +59,7 @@ BBDown4.1 是一个 Windows 桌面工具，用来降低批量处理视频、音�
 前往 Releases 下载：
 
 ```text
-BBDown-4.1.exe
+BBDown-4.2.exe
 ```
 
 双击安装包，按照提示安装即可。
@@ -57,7 +69,7 @@ BBDown-4.1.exe
 前往 Releases 下载：
 
 ```text
-BBDown-4.1.zip
+BBDown-4.2.zip
 ```
 
 使用方法：
@@ -90,7 +102,7 @@ run_source.bat
 ## 项目结构
 
 ```text
-BBDown4.1/
+BBDown4.2/
 ├─ app.py
 ├─ core/                         # 下载、配置、任务调度、转写服务
 │  ├─ asr_service.py              # ASR 接口封装
@@ -151,7 +163,7 @@ installer_output\
 
 ## 卡密维护
 
-4.1 保留卡密激活逻辑，默认开启强制校验。
+4.2 保留卡密激活逻辑，默认开启强制校验。
 
 本版本采用本地 EXE 直连飞书 Base 的方式。先复制模板：
 
@@ -195,8 +207,8 @@ installer.iss
 
 ```powershell
 .\.venv\Scripts\python.exe -m PyInstaller build_bbdown_launcher.spec --noconfirm --clean
-New-Item -ItemType Directory -Force -Path .\release_assets\v4.1
-Compress-Archive -Path .\dist\BBDown -DestinationPath .\release_assets\v4.1\BBDown-4.1.zip -Force
+New-Item -ItemType Directory -Force -Path .\release_assets\v4.2
+Compress-Archive -Path .\dist\BBDown -DestinationPath .\release_assets\v4.2\BBDown-4.2.zip -Force
 ```
 
 3. 生成安装包：
@@ -214,15 +226,15 @@ ISCC.exe installer.iss
 生成文件：
 
 ```text
-installer_output\BBDown-4.1.exe
+installer_output\BBDown-4.2.exe
 ```
 
 4. 先测试本地产物：
 
 ```text
 dist\BBDown\BBDown.exe
-release_assets\v4.1\BBDown-4.1.zip
-installer_output\BBDown-4.1.exe
+release_assets\v4.2\BBDown-4.2.zip
+installer_output\BBDown-4.2.exe
 ```
 
 5. 测试无误后，再创建 GitHub Release 并上传安装包和解压包。
